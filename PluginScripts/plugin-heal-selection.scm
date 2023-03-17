@@ -25,7 +25,7 @@
 ;   http://www.gnu.org/copyleft/gpl.html
 ;
 
-(define (script-fu-heal-selection timg tdrawable samplingRadiusParam directionParam orderParam)
+(define (script-fu-heal-selection target-image target-drawable sampling-radius sample-from filling-order)
   ; GIMP 2 functions return (0) for failure and (1) for success, while in
   ; GIMP 3 they return #f or #t; we use this wrapper to check for success
   ; in a version-independent manner
@@ -44,84 +44,84 @@
 
   ; Create stencil selection in a temp image to pass as source (corpus) to plugin resynthesizer,
   ; which does the substantive work
-  (if (gbool (gimp-selection-is-empty timg))
+  (if (gbool (gimp-selection-is-empty target-image))
     (gimp-message _"You must first select a region to heal.")
     (begin
-      (gimp-image-undo-group-start timg)
-      (let* ((targetBounds (cdr (gimp-drawable-mask-bounds tdrawable)))
+      (gimp-image-undo-group-start target-image)
+      (let* ((target-bounds (cdr (gimp-drawable-mask-bounds target-drawable)))
              ; In duplicate image, create the sample (corpus).
              ; (I tried to use a temporary layer, but found it easier to use duplicate image.)
-             (tempImage (car (assert (gimp-image-duplicate timg) "Failed duplicate image")))
+             (temp-image (car (assert (gimp-image-duplicate target-image) "Failed duplicate image")))
              ; !!! The drawable can be a mask (grayscale channel), don't restrict to layer
-             (work_drawable (car (assert (gimp-image-get-active-drawable tempImage) "Failed get active drawable")))
+             (work-drawable (car (assert (gimp-image-get-active-drawable temp-image) "Failed get active drawable")))
              ; save for later use
-             (orgSelection (car (gimp-selection-save tempImage))))
+             (org-selection (car (gimp-selection-save temp-image))))
         ; grow and punch hole, making a frisket iow stencil iow donut
-        (gimp-selection-grow tempImage samplingRadiusParam)
+        (gimp-selection-grow temp-image sampling-radius)
         ; !!! Note that if selection is a bordering ring already, growing expanded it inwards.
         ; Which is what we want, to make a corpus inwards.
-        (let* ((grownSelection (car (gimp-selection-save tempImage))))
+        (let* ((grown-selection (car (gimp-selection-save temp-image))))
           ; Cut hole where the original selection was, so we don't sample from it.
-          (gimp-image-select-item tempImage CHANNEL-OP-SUBTRACT orgSelection)
+          (gimp-image-select-item temp-image CHANNEL-OP-SUBTRACT org-selection)
           ;Selection (to be the corpus) is donut or frisket around the original target T
           ;  xxx
           ;  xTx
           ;  xxx
-          (let* ((frisketBounds (cdr (gimp-drawable-mask-bounds grownSelection)))
-                 (newBounds)
-                 (imageWidth (car (gimp-image-width tempImage)))
-                 (imageHeight (car (gimp-image-height tempImage)))
+          (let* ((frisket-bounds (cdr (gimp-drawable-mask-bounds grown-selection)))
+                 (new-bounds)
+                 (imageWidth (car (gimp-image-width temp-image)))
+                 (imageHeight (car (gimp-image-height temp-image)))
                  (x-clamp (lambda (x) (min (max x 0) imageWidth)))
                  (y-clamp (lambda (y) (min (max y 0) imageHeight))))
             (cond
-              ((= directionParam 0) ; all around
+              ((= sample-from 0) ; all around
                ; Crop to the entire frisket
-               (set! newBounds frisketBounds))
-              ((= directionParam 1) ; sides
+               (set! new-bounds frisket-bounds))
+              ((= sample-from 1) ; sides
                ; Crop to target height and frisket width: XTX
-               (set! newBounds (list (b-left frisketBounds) (b-top targetBounds)
-                                     (b-right frisketBounds) (b-bottom targetBounds))))
-              ((= directionParam 2) ; above and below
+               (set! new-bounds (list (b-left frisket-bounds) (b-top target-bounds)
+                                      (b-right frisket-bounds) (b-bottom target-bounds))))
+              ((= sample-from 2) ; above and below
                ; X Crop to target width and frisket height
                ; T
                ; X
-               (set! newBounds (list (b-left targetBounds) (b-top frisketBounds)
-                                     (b-right targetBounds) (b-bottom frisketBounds)))))
+               (set! new-bounds (list (b-left target-bounds) (b-top frisket-bounds)
+                                      (b-right target-bounds) (b-bottom frisket-bounds)))))
             ; clamp to image size
-            (set! newBounds (list (x-clamp (b-left newBounds))
-                                  (y-clamp (b-top newBounds))
-                                  (x-clamp (b-right newBounds))
-                                  (y-clamp (b-bottom newBounds))))
-            (gimp-image-crop tempImage (b-width newBounds) (b-height newBounds)
-                                       (b-left newBounds) (b-top newBounds))
+            (set! new-bounds (list (x-clamp (b-left new-bounds))
+                                   (y-clamp (b-top new-bounds))
+                                   (x-clamp (b-right new-bounds))
+                                   (y-clamp (b-bottom new-bounds))))
+            (gimp-image-crop temp-image (b-width new-bounds) (b-height new-bounds)
+                                        (b-left new-bounds) (b-top new-bounds))
             ; Encode two script params into one resynthesizer param.
             ; use border 1 means fill target in random order
             ; use border 0 is for texture mapping operations, not used by this script
-            (let* ((useBorder
+            (let* ((user-border
                      (cond
                        ; User wants NO order, ie random filling
-                       ((= orderParam 0)
+                       ((= filling-order 0)
                         1)
                        ; Inward to corpus. 2, 3, 4
-                       ((= orderParam 1)
+                       ((= filling-order 1)
                         ; !!! Offset by 2 to get past the original two boolean values
-                        (+ directionParam 2))
+                        (+ sample-from 2))
                        ; Outward from image center.
                        (else
                          ; 5+0=5 outward concentric
                          ; 5+1=6 outward from sides
                          ; 5+2=7 outward above and below
-                         (+ directionParam 5)))))
-              (if debug (gimp-display-new tempImage))
+                         (+ sample-from 5)))))
+              (if debug (gimp-display-new temp-image))
               (plug-in-resynthesizer RUN-NONINTERACTIVE
-                       timg tdrawable
-                       0 0 useBorder
-                       work_drawable
-                       -1 -1 0.0 0.117 16 500)
+                                     target-image target-drawable
+                                     0 0 user-border
+                                     work-drawable
+                                     -1 -1 0.0 0.117 16 500)
               )))
         ; clean up
-        (if (not debug) (gimp-image-delete tempImage)))
-      (gimp-image-undo-group-end timg)
+        (if (not debug) (gimp-image-delete temp-image)))
+      (gimp-image-undo-group-end target-image)
       )
     )
   )
